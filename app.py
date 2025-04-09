@@ -1,106 +1,148 @@
+from fastapi import FastAPI, Request
+from fastapi.responses import HTMLResponse
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+import uvicorn
 import os
-import pickle
-import pandas as pd
-import numpy as np
-import streamlit as st
-import plotly.graph_objects as go
-from sklearn.preprocessing import StandardScaler
-from sklearn.model_selection import train_test_split
-from sklearn.linear_model import LogisticRegression
-from sklearn.metrics import accuracy_score, classification_report
 
+app = FastAPI()
 
-def get_clean_data():
-    data_path = os.path.join(os.path.dirname(__file__), "data", "data.csv")
-    if not os.path.exists(data_path):
-        raise FileNotFoundError(f"Data file not found at: {data_path}")
-    
-    data = pd.read_csv(data_path)
-    data = data.drop(columns=[col for col in ['id', 'Unnamed: 32'] if col in data.columns], errors='ignore')
-    data['diagnosis'] = data['diagnosis'].map({'M': 1, 'B': 0})
-    return data
+# Allow all origins (CORS)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
+# Prediction function
+def predict_box_office(budget, runtime, popularity, genre):
+    genre_bonus = {
+        'action': 20,
+        'comedy': 10,
+        'drama': 5,
+        'sci-fi': 25
+    }.get(genre.lower(), 0)
+    return 2 * budget + 0.5 * runtime + 3 * popularity + genre_bonus
 
-def create_and_save_model(data):
-    X = data.drop(['diagnosis'], axis=1)
-    y = data['diagnosis']
-    
-    scaler = StandardScaler()
-    X_scaled = scaler.fit_transform(X)
-    X_train, X_test, y_train, y_test = train_test_split(X_scaled, y, test_size=0.2, random_state=42)
-    
-    model = LogisticRegression(random_state=42)
-    model.fit(X_train, y_train)
-    
-    y_pred = model.predict(X_test)
-    st.write("Model Accuracy:", accuracy_score(y_test, y_pred))
-    st.write("Classification Report:\n", classification_report(y_test, y_pred))
-    
-    model_dir = os.path.join(os.path.dirname(__file__), "model")
-    os.makedirs(model_dir, exist_ok=True)
-    
-    with open(os.path.join(model_dir, "model.pkl"), 'wb') as f:
-        pickle.dump(model, f)
-    with open(os.path.join(model_dir, "scaler.pkl"), 'wb') as f:
-        pickle.dump(scaler, f)
+# Pydantic model
+class Movie(BaseModel):
+    budget: float
+    runtime: float
+    popularity: float
+    genre: str
 
+# HTML page route
+@app.get("/", response_class=HTMLResponse)
+def get_ui():
+    return HTMLResponse(content="""
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Box Office Predictor 🎬</title>
+  <style>
+    body {
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+      background: #f4f6f8;
+      padding: 40px 20px;
+      max-width: 420px;
+      margin: auto;
+      color: #333;
+    }
 
-def load_model():
-    model_path = os.path.join(os.path.dirname(__file__), "model", "model.pkl")
-    scaler_path = os.path.join(os.path.dirname(__file__), "model", "scaler.pkl")
-    if not os.path.exists(model_path) or not os.path.exists(scaler_path):
-        data = get_clean_data()
-        create_and_save_model(data)
-    return pickle.load(open(model_path, "rb")), pickle.load(open(scaler_path, "rb"))
+    h2 {
+      text-align: center;
+      color: #222;
+      margin-bottom: 20px;
+    }
 
+    input, select, button {
+      width: 100%;
+      padding: 12px;
+      margin-top: 12px;
+      border: 1px solid #ccc;
+      border-radius: 6px;
+      box-sizing: border-box;
+      font-size: 16px;
+    }
 
-def add_sidebar():
-    st.sidebar.header("Cell Nuclei Measurements")
-    data = get_clean_data()
-    input_dict = {}
-    for col in data.columns[:-1]:
-        input_dict[col] = st.sidebar.slider(col, float(0), float(data[col].max()), float(data[col].mean()))
-    return input_dict
+    button {
+      background-color: #4CAF50;
+      color: white;
+      font-weight: bold;
+      border: none;
+      cursor: pointer;
+      transition: background-color 0.3s;
+    }
 
+    button:hover {
+      background-color: #45a049;
+    }
 
-def get_radar_chart(input_data):
-    categories = list(input_data.keys())[:10]
-    fig = go.Figure()
-    fig.add_trace(go.Scatterpolar(r=list(input_data.values())[:10], theta=categories, fill='toself', name='Features'))
-    fig.update_layout(polar=dict(radialaxis=dict(visible=True, range=[0, 1])), showlegend=True)
-    return fig
+    h3#result {
+      text-align: center;
+      margin-top: 20px;
+      font-size: 20px;
+      color: #1a73e8;
+    }
 
+    select {
+      background-color: #fff;
+    }
+  </style>
+</head>
+<body>
+  <h2>Box Office Predictor 🎬</h2>
 
-def add_predictions(input_data, model, scaler):
-    input_array = np.array(list(input_data.values())).reshape(1, -1)
-    input_array_scaled = scaler.transform(input_array)
-    prediction = model.predict(input_array_scaled)
-    
-    st.subheader("Cell Cluster Prediction")
-    st.write("The cell cluster is:")
-    if prediction[0] == 0:
-        st.success("Benign")
-    else:
-        st.error("Malignant")
-    
-    st.write("Probability of being benign:", model.predict_proba(input_array_scaled)[0][0])
-    st.write("Probability of being malignant:", model.predict_proba(input_array_scaled)[0][1])
+  <input type="number" id="budget" placeholder="Budget (in millions)">
+  <input type="number" id="runtime" placeholder="Runtime (minutes)">
+  <input type="number" id="popularity" placeholder="Popularity Score">
 
+  <select id="genre">
+    <option value="action">Action</option>
+    <option value="comedy">Comedy</option>
+    <option value="drama">Drama</option>
+    <option value="sci-fi">Sci-Fi</option>
+    <option value="other">Other</option>
+  </select>
 
-def main():
-    st.set_page_config(page_title="Breast Cancer Predictor", page_icon="👩‍⚕️", layout="wide")
-    st.title("Breast Cancer Predictor")
-    st.write("This app predicts whether a breast mass is benign or malignant based on cytology lab measurements.")
-    
-    model, scaler = load_model()
-    input_data = add_sidebar()
-    
-    col1, col2 = st.columns([4, 1])
-    with col1:
-        st.plotly_chart(get_radar_chart(input_data))
-    with col2:
-        add_predictions(input_data, model, scaler)
+  <button onclick="predict()">Predict</button>
 
+  <h3 id="result"></h3>
 
-if __name__ == '__main__':
-    main()
+  <script>
+    async function predict() {
+      const data = {
+        budget: parseFloat(document.getElementById('budget').value),
+        runtime: parseFloat(document.getElementById('runtime').value),
+        popularity: parseFloat(document.getElementById('popularity').value),
+        genre: document.getElementById('genre').value
+      };
+
+      const response = await fetch("/predict", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(data)
+      });
+
+      const result = await response.json();
+      document.getElementById('result').innerText = 
+        "🎯 Predicted Box Office: $" + result.box_office_prediction + "M";
+    }
+  </script>
+</body>
+</html>
+""", media_type="text/html")
+
+# Prediction endpoint
+@app.post("/predict")
+def predict(movie: Movie):
+    prediction = predict_box_office(
+        movie.budget, movie.runtime, movie.popularity, movie.genre
+    )
+    return {"box_office_prediction": round(prediction, 2)}
+
+# Entry point
+if __name__ == "__main__":
+    uvicorn.run(app, host="127.0.0.1", port=8000)
